@@ -1,0 +1,20 @@
+As a user of the Construction Project Monitoring System, here's how I would utilize the application:
+Login and Registration
+
+When I first access the application, I'm presented with the login and registration options.
+If I'm a new user, I can click on the "Register" button and fill out the form to create a new account. I'll need to provide a username and password, and select my role (either "admin" or "user").
+If I already have an account, I can enter my username and password in the login form and click the "Login" button to access the application.
+
+Dashboard and Navigation
+
+After logging in, I'm taken to the main dashboard of the application, which displays the available menu options in the sidebar.
+The menu options include "Projects", "Tasks", "Resources", "Files", "Users" (if I'm an admin), and "Notifications".
+I can navigate between these sections by clicking on the corresponding menu item in the sidebar.
+
+Projects Management
+
+In the "Projects" section, I can view a list of all the construction projects that have been created.
+If I'm an admin user, I can create a new project by filling out the "Create Project" form, which includes fields for the project name, description, start date, and end date.
+I can also update an existing project by clicking the "Update Project" button, which will allow me to modify the project's name, description, start date, and end date.
+If I'm an admin, I can also delete a project by clicking the "Delete Project" button.
+For each project, I can see associated tasks, resour

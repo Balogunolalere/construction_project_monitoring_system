@@ -1,505 +1,275 @@
 import streamlit as st
-import bcrypt
 from datetime import datetime
-import os
 import logging
-from database import (
-    create_project, read_projects, update_project, delete_project,
-    create_task, read_tasks, read_tasks_by_project, update_task, delete_task,
-    create_resource, read_resources, update_resource, delete_resource,
-    create_file, read_files, read_files_by_project, update_file, delete_file,
-    User, create_user, update_user, delete_user, get_notifications_by_user,
-    create_notification
-)
+from database import Project, File, Notification, Resource, Task, Budget, Message, Report, User
+from auth import login, register, check_login, logout
 
 # Configure logging
-logging.basicConfig(filename='app.log', level=logging.INFO,
-                    format='%(asctime)s:%(levelname)s:%(message)s')
-
-def login():
-    """Handle user login."""
-    st.subheader("Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        try:
-            user = User.get_by_username(username)
-            if user and bcrypt.checkpw(password.encode(), user['password'].encode()):
-                st.success("Logged in successfully!")
-                st.session_state["authenticated"] = True
-                st.session_state["username"] = username
-                st.session_state["role"] = user['role']
-                st.session_state["user_id"] = user['id']
-                logging.info(f"User {username} logged in successfully")
-            else:
-                st.error("Invalid username or password")
-                logging.warning(f"Failed login attempt for username: {username}")
-        except Exception as e:
-            st.error("An error occurred during login. Please try again.")
-            logging.error(f"Login error: {str(e)}")
-
-def register():
-    """Handle user registration."""
-    st.subheader("Register")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    confirm_password = st.text_input("Confirm Password", type="password")
-    if st.button("Register"):
-        if password != confirm_password:
-            st.error("Passwords do not match")
-        else:
-            try:
-                user = User.get_by_username(username)
-                if user:
-                    st.error("Username already taken")
-                else:
-                    create_user(username, password, "user")
-                    st.success("Account created successfully!")
-                    logging.info(f"User {username} registered successfully")
-            except Exception as e:
-                st.error("An error occurred during registration. Please try again.")
-                logging.error(f"Registration error: {str(e)}")
-
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def main():
-    """Main application logic."""
-    st.title("Construction Project Monitoring System")
+    st.title("Construction Project Management System")
 
-    menu = ["Projects", "Tasks", "Resources", "Files", "Users", "Notifications"]
-    choice = st.sidebar.selectbox("Menu", menu)
+    if 'user' not in st.session_state:
+        st.session_state.user = None
 
-    if choice == "Projects":
-        st.subheader("Projects")
-        if st.session_state["role"] == "admin":
+    if st.session_state.user is None:
+        login_register()
+    else:
+        menu = ["View Projects", "Manage Projects", "File Management", "Notifications", "Resource Management", "Project Planning", "Budget Management", "Communication", "Reporting", "Logout"]
+        choice = st.sidebar.selectbox("Menu", menu)
+
+        if choice == "View Projects":
+            view_projects()
+        elif choice == "Manage Projects":
             manage_projects()
-        view_projects()
+        elif choice == "File Management":
+            file_management()
+        elif choice == "Notifications":
+            notifications()
+        elif choice == "Resource Management":
+            resource_management()
+        elif choice == "Project Planning":
+            project_planning()
+        elif choice == "Budget Management":
+            budget_management()
+        elif choice == "Communication":
+            communication()
+        elif choice == "Reporting":
+            reporting()
+        elif choice == "Logout":
+            logout(st.session_state)
+            st.rerun()
 
-    elif choice == "Tasks":
-        st.subheader("Tasks")
-        if st.session_state["role"] == "admin":
-            manage_tasks()
-        view_tasks()
+def login_register():
+    st.subheader("Login or Register")
+    tab1, tab2 = st.tabs(["Login", "Register"])
 
-    elif choice == "Resources":
-        st.subheader("Resources")
-        if st.session_state["role"] == "admin":
-            manage_resources()
-        view_resources()
+    with tab1:
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            user = login(username, password)
+            if user:
+                st.session_state.user = user
+                st.success("Logged in successfully!")
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
 
-    elif choice == "Files":
-        st.subheader("Files")
-        if st.session_state["role"] == "admin":
-            manage_files()
-        view_files()
+    with tab2:
+        new_username = st.text_input("New Username")
+        new_password = st.text_input("New Password", type="password")
+        if st.button("Register"):
+            if register(new_username, new_password):
+                st.success("Registered successfully! Please login.")
+            else:
+                st.error("Registration failed. Username may already exist.")
 
-    elif choice == "Users":
-        st.subheader("Users")
-        if st.session_state["role"] == "admin":
-            manage_users()
-        else:
-            st.warning("You do not have permission to manage users.")
-
-    elif choice == "Notifications":
-        st.subheader("Notifications")
-        view_notifications()
-
-    if st.sidebar.button("Logout"):
-        st.session_state["authenticated"] = False
-        st.session_state["username"] = None
-        st.session_state["role"] = None
-        st.session_state["user_id"] = None
-        logging.info(f"User {st.session_state.get('username')} logged out")
-        st.rerun()
-
-    st.sidebar.write("Logged in as:", st.session_state["username"])
-    st.sidebar.write("Role:", st.session_state["role"])
+def view_projects():
+    st.subheader("View Projects")
+    projects = Project.get_all()
+    for project in projects:
+        st.write(f"ID: {project['id']}, Name: {project['name']}")
+        st.write(f"Description: {project['description']}")
+        st.write(f"Start Date: {project['start_date']}, End Date: {project['end_date']}")
+        st.write("---")
 
 def manage_projects():
-    """Handle project management operations."""
     st.subheader("Manage Projects")
 
+    # Create new project
     with st.form("Create Project"):
+        st.write("Create New Project")
         project_name = st.text_input("Project Name")
         project_description = st.text_area("Description")
         start_date = st.date_input("Start Date")
         end_date = st.date_input("End Date")
-        submitted = st.form_submit_button("Create Project")
-        if submitted:
+        if st.form_submit_button("Create Project"):
             try:
-                create_project(project_name, project_description, start_date, end_date)
+                Project.create(project_name, project_description, start_date, end_date)
                 st.success(f"Project '{project_name}' created successfully!")
-                logging.info(f"Project '{project_name}' created by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], None, f"New project '{project_name}' created")
+                st.rerun()
             except Exception as e:
-                st.error(f"An error occurred while creating the project: {str(e)}")
-                logging.error(f"Error creating project: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error creating project: {str(e)}")
 
-    projects = read_projects()
+    # List and update projects
+    projects = Project.get_all()
     for project in projects:
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.write(f"ID: {project['id']}, Name: {project['name']}, Description: {project['description']}")
-        with col2:
-            if st.button(f"Update Project {project['name']}", key=f"update_{project['id']}"):
-                update_project_form(project)
-        with col3:
-            if st.button(f"Delete Project {project['name']}", key=f"delete_{project['id']}"):
-                try:
-                    delete_project(project['id'])
-                    st.success(f"Project '{project['name']}' deleted successfully!")
-                    logging.info(f"Project '{project['name']}' deleted by {st.session_state['username']}")
-                    create_notification(st.session_state["user_id"], None, f"Project '{project['name']}' deleted")
-                except Exception as e:
-                    st.error(f"An error occurred while deleting the project: {str(e)}")
-                    logging.error(f"Error deleting project: {str(e)}")
+        with st.expander(f"Project: {project['name']}"):
+            with st.form(f"Update Project {project['id']}"):
+                updated_name = st.text_input("Name", value=project['name'])
+                updated_description = st.text_area("Description", value=project['description'])
+                updated_start_date = st.date_input("Start Date", value=datetime.strptime(project['start_date'], "%Y-%m-%d").date())
+                updated_end_date = st.date_input("End Date", value=datetime.strptime(project['end_date'], "%Y-%m-%d").date())
 
-def update_project_form(project):
-    """Display form for updating a project."""
-    with st.form(f"Update Project {project['name']}"):
-        project_name = st.text_input("Project Name", value=project['name'])
-        project_description = st.text_area("Description", value=project['description'])
-        start_date = st.date_input("Start Date", value=datetime.strptime(project['start_date'], "%Y-%m-%d").date())
-        end_date = st.date_input("End Date", value=datetime.strptime(project['end_date'], "%Y-%m-%d").date())
-        submitted = st.form_submit_button("Update Project")
-        if submitted:
-            try:
-                update_project(project['id'], project_name, project_description, start_date, end_date)
-                st.success(f"Project '{project_name}' updated successfully!")
-                logging.info(f"Project '{project_name}' updated by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], project['id'], f"Project '{project_name}' updated")
-            except Exception as e:
-                st.error(f"An error occurred while updating the project: {str(e)}")
-                logging.error(f"Error updating project: {str(e)}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.form_submit_button("Update"):
+                        try:
+                            updated_project = Project.update(project['id'], updated_name, updated_description, updated_start_date, updated_end_date)
+                            if updated_project:
+                                st.success(f"Project '{updated_name}' updated successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to update project.")
+                        except Exception as e:
+                            st.error(f"An error occurred: {str(e)}")
+                            logger.error(f"Error updating project: {str(e)}")
 
-def view_projects():
-    """Display all projects."""
-    st.subheader("View Projects")
-    projects = read_projects()
-    for project in projects:
-        st.write(f"ID: {project['id']}, Name: {project['name']}, Description: {project['description']}")
-        st.write(f"Start Date: {project['start_date']}, End Date: {project['end_date']}")
+                with col2:
+                    if st.form_submit_button("Delete"):
+                        try:
+                            Project.delete(project['id'])
+                            st.success(f"Project '{project['name']}' deleted successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"An error occurred: {str(e)}")
+                            logger.error(f"Error deleting project: {str(e)}")
+
+def file_management():
+    st.subheader("File Management")
+    uploaded_file = st.file_uploader("Upload a file", type=["pdf", "cad", "jpg", "png"])
+    if uploaded_file is not None:
+        file_path = f"uploads/{uploaded_file.name}"
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success(f"File '{uploaded_file.name}' uploaded successfully!")
+        File.create(uploaded_file.name, file_path)
+
+    files = File.get_all()
+    for file in files:
+        st.write(f"ID: {file['id']}, Name: {file['name']}, Path: {file['path']}")
         st.write("---")
 
-        display_project_tasks(project['id'])
-        display_project_resources(project['id'])
-        display_project_files(project['id'])
-
-def display_project_tasks(project_id):
-    """Display tasks associated with a project."""
-    tasks = read_tasks_by_project(project_id)
-    if tasks:
-        st.write("Tasks:")
-        for task in tasks:
-            st.write(f"- {task['name']} (Status: {task['status']})")
-    else:
-        st.write("No tasks found for this project.")
-
-def display_project_resources(project_id):
-    """Display resources associated with a project."""
-    resources = read_resources()  # Assuming there is no direct relation between projects and resources
-    if resources:
-        st.write("Resources:")
-        for resource in resources:
-            st.write(f"- {resource['name']} ({resource['type']})")
-    else:
-        st.write("No resources found.")
-
-def display_project_files(project_id):
-    """Display files associated with a project."""
-    files = read_files_by_project(project_id)
-    if files:
-        st.write("Files:")
-        for file in files:
-            st.write(f"- {file['name']} (Version: {file['version']})")
-    else:
-        st.write("No files found for this project.")
-
-def manage_tasks():
-    """Handle task management operations."""
-    st.subheader("Manage Tasks")
-
-    with st.form("Create Task"):
-        project_id = st.selectbox("Project", [project['id'] for project in read_projects()], format_func=lambda x: str(x))
-        task_name = st.text_input("Task Name")
-        task_description = st.text_area("Description")
-        start_date = st.date_input("Start Date")
-        end_date = st.date_input("End Date")
-        status = st.selectbox("Status", ["Not Started", "In Progress", "Completed"])
-        submitted = st.form_submit_button("Create Task")
-        if submitted:
-            try:
-                create_task(project_id, task_name, task_description, start_date, end_date, status)
-                st.success(f"Task '{task_name}' created successfully!")
-                logging.info(f"Task '{task_name}' created by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], project_id, f"New task '{task_name}' created")
-            except Exception as e:
-                st.error(f"An error occurred while creating the task: {str(e)}")
-                logging.error(f"Error creating task: {str(e)}")
-
-    tasks = read_tasks()
-    for task in tasks:
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.write(f"ID: {task['id']}, Name: {task['name']}, Project: {task['project_id']}, Status: {task['status']}")
-        with col2:
-            if st.button(f"Update Task {task['name']}", key=f"update_task_{task['id']}"):
-                update_task_form(task)
-        with col3:
-            if st.button(f"Delete Task {task['name']}", key=f"delete_task_{task['id']}"):
-                try:
-                    delete_task(task['id'])
-                    st.success(f"Task '{task['name']}' deleted successfully!")
-                    logging.info(f"Task '{task['name']}' deleted by {st.session_state['username']}")
-                    create_notification(st.session_state["user_id"], task['project_id'], f"Task '{task['name']}' deleted")
-                except Exception as e:
-                    st.error(f"An error occurred while deleting the task: {str(e)}")
-                    logging.error(f"Error deleting task: {str(e)}")
-
-def update_task_form(task):
-    """Display form for updating a task."""
-    with st.form(f"Update Task {task['name']}"):
-        task_name = st.text_input("Task Name", value=task['name'])
-        task_description = st.text_area("Description", value=task['description'])
-        start_date = st.date_input("Start Date", value=task['start_date'])
-        end_date = st.date_input("End Date", value=task['end_date'])
-        status = st.selectbox("Status", ["Not Started", "In Progress", "Completed"], index=["Not Started", "In Progress", "Completed"].index(task['status']))
-        submitted = st.form_submit_button("Update Task")
-        if submitted:
-            try:
-                update_task(task['id'], task_name, task_description, start_date, end_date, status)
-                st.success(f"Task '{task_name}' updated successfully!")
-                logging.info(f"Task '{task_name}' updated by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], task['project_id'], f"Task '{task_name}' updated")
-            except Exception as e:
-                st.error(f"An error occurred while updating the task: {str(e)}")
-                logging.error(f"Error updating task: {str(e)}")
-
-def view_tasks():
-    """Display all tasks."""
-    st.subheader("View Tasks")
-    tasks = read_tasks()
-    for task in tasks:
-        st.write(f"ID: {task['id']}, Name: {task['name']}, Project: {task['project_id']}, Status: {task['status']}")
-        st.write(f"Start Date: {task['start_date']}, End Date: {task['end_date']}")
-        st.write(f"Description: {task['description']}")
+def notifications():
+    st.subheader("Notifications")
+    notifications = Notification.get_all()
+    for notification in notifications:
+        st.write(f"Message: {notification['message']}")
+        st.write(f"Date: {notification['date']}")
         st.write("---")
 
-def manage_resources():
-    """Handle resource management operations."""
-    st.subheader("Manage Resources")
-
-    with st.form("Create Resource"):
-        resource_name = st.text_input("Resource Name")
-        resource_type = st.text_input("Resource Type")
-        available_from = st.date_input("Available From")
-        available_to = st.date_input("Available To")
-        submitted = st.form_submit_button("Create Resource")
-        if submitted:
+    with st.form("Create Notification"):
+        message = st.text_area("Message")
+        date = st.date_input("Date")
+        if st.form_submit_button("Create Notification"):
             try:
-                create_resource(resource_name, resource_type, available_from, available_to)
-                st.success(f"Resource '{resource_name}' created successfully!")
-                logging.info(f"Resource '{resource_name}' created by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], None, f"New resource '{resource_name}' created")
+                Notification.create(message, date)
+                st.success("Notification created successfully!")
+                st.rerun()
             except Exception as e:
-                st.error(f"An error occurred while creating the resource: {str(e)}")
-                logging.error(f"Error creating resource: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error creating notification: {str(e)}")
 
-    resources = read_resources()
-    for resource in resources:
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.write(f"ID: {resource['id']}, Name: {resource['name']}, Type: {resource['type']}")
-        with col2:
-            if st.button(f"Update Resource {resource['name']}", key=f"update_resource_{resource['id']}"):
-                update_resource_form(resource)
-        with col3:
-            if st.button(f"Delete Resource {resource['name']}", key=f"delete_resource_{resource['id']}"):
-                try:
-                    delete_resource(resource['id'])
-                    st.success(f"Resource '{resource['name']}' deleted successfully!")
-                    logging.info(f"Resource '{resource['name']}' deleted by {st.session_state['username']}")
-                    create_notification(st.session_state["user_id"], None, f"Resource '{resource['name']}' deleted")
-                except Exception as e:
-                    st.error(f"An error occurred while deleting the resource: {str(e)}")
-                    logging.error(f"Error deleting resource: {str(e)}")
-
-def update_resource_form(resource):
-    """Display form for updating a resource."""
-    with st.form(f"Update Resource {resource['name']}"):
-        resource_name = st.text_input("Resource Name", value=resource['name'])
-        resource_type = st.text_input("Resource Type", value=resource['type'])
-        available_from = st.date_input("Available From", value=resource['available_from'])
-        available_to = st.date_input("Available To", value=resource['available_to'])
-        submitted = st.form_submit_button("Update Resource")
-        if submitted:
-            try:
-                update_resource(resource['id'], resource_name, resource_type, available_from, available_to)
-                st.success(f"Resource '{resource_name}' updated successfully!")
-                logging.info(f"Resource '{resource_name}' updated by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], None, f"Resource '{resource_name}' updated")
-            except Exception as e:
-                st.error(f"An error occurred while updating the resource: {str(e)}")
-                logging.error(f"Error updating resource: {str(e)}")
-
-def view_resources():
-    """Display all resources."""
-    st.subheader("View Resources")
-    resources = read_resources()
+def resource_management():
+    st.subheader("Resource Management")
+    resources = Resource.get_all()
     for resource in resources:
         st.write(f"ID: {resource['id']}, Name: {resource['name']}, Type: {resource['type']}")
-        st.write(f"Available From: {resource['available_from']}, Available To: {resource['available_to']}")
+        st.write(f"Availability: {resource['availability']}")
         st.write("---")
 
-def manage_files():
-    """Handle file management operations."""
-    st.subheader("Manage Files")
-
-    with st.form("Upload File"):
-        project_id = st.selectbox("Project", [project['id'] for project in read_projects()], format_func=lambda x: str(x))
-        file = st.file_uploader("Choose a file")
-        submitted = st.form_submit_button("Upload File")
-        if submitted and file is not None:
+    with st.form("Create Resource"):
+        name = st.text_input("Name")
+        type = st.text_input("Type")
+        availability = st.text_input("Availability")
+        if st.form_submit_button("Create Resource"):
             try:
-                file_name = file.name
-                uploads_dir = "uploads"
-                os.makedirs(uploads_dir, exist_ok=True)
-                file_path = os.path.join(uploads_dir, file_name)
-                with open(file_path, "wb") as f:
-                    f.write(file.getbuffer())
-                version = 1
-                uploaded_by = st.session_state["username"]
-                create_file(project_id, file_name, file_path, version, uploaded_by)
-                st.success(f"File '{file_name}' uploaded successfully!")
-                logging.info(f"File '{file_name}' uploaded by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], project_id, f"New file '{file_name}' uploaded")
+                Resource.create(name, type, availability)
+                st.success("Resource created successfully!")
+                st.rerun()
             except Exception as e:
-                st.error(f"An error occurred while uploading the file: {str(e)}")
-                logging.error(f"Error uploading file: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error creating resource: {str(e)}")
 
-    files = read_files()
-    for file in files:
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.write(f"ID: {file['id']}, Name: {file['name']}, Project: {file['project_id']}, Version: {file['version']}, Uploaded By: {file['uploaded_by']}, Uploaded At: {file['uploaded_at']}")
-        with col2:
-            if st.button(f"Update File {file['name']}", key=f"update_file_{file['id']}"):
-                update_file_form(file)
-        with col3:
-            if st.button(f"Delete File {file['name']}", key=f"delete_file_{file['id']}"):
-                try:
-                    delete_file(file['id'])
-                    st.success(f"File '{file['name']}' deleted successfully!")
-                    logging.info(f"File '{file['name']}' deleted by {st.session_state['username']}")
-                    create_notification(st.session_state["user_id"], file['project_id'], f"File '{file['name']}' deleted")
-                except Exception as e:
-                    st.error(f"An error occurred while deleting the file: {str(e)}")
-                    logging.error(f"Error deleting file: {str(e)}")
+def project_planning():
+    st.subheader("Project Planning")
+    tasks = Task.get_all()
+    for task in tasks:
+        st.write(f"ID: {task['id']}, Name: {task['name']}, Start Date: {task['start_date']}, End Date: {task['end_date']}")
+        st.write(f"Dependencies: {task['dependencies']}")
+        st.write("---")
 
-def update_file_form(file):
-    """Display form for updating a file."""
-    with st.form(f"Update File {file['name']}"):
-        file_name = st.text_input("File Name", value=file['name'])
-        new_file = st.file_uploader("Choose a new file", key=f"update_{file['id']}")
-        submitted = st.form_submit_button("Update File")
-        if submitted:
+    with st.form("Create Task"):
+        name = st.text_input("Name")
+        start_date = st.date_input("Start Date")
+        end_date = st.date_input("End Date")
+        dependencies = st.text_input("Dependencies")
+        if st.form_submit_button("Create Task"):
             try:
-                if new_file is not None:
-                    file_path = os.path.join("uploads", new_file.name)
-                    with open(file_path, "wb") as f:
-                        f.write(new_file.getbuffer())
-                else:
-                    file_path = file['file_path']
-                new_version = update_file(file['id'], file_name, file_path)
-                st.success(f"File '{file_name}' updated successfully! New version: {new_version}")
-                logging.info(f"File '{file_name}' updated by {st.session_state['username']}")
-                create_notification(st.session_state["user_id"], file['project_id'], f"File '{file_name}' updated to version {new_version}")
+                Task.create(name, start_date, end_date, dependencies)
+                st.success("Task created successfully!")
+                st.rerun()
             except Exception as e:
-                st.error(f"An error occurred while updating the file: {str(e)}")
-                logging.error(f"Error updating file: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error creating task: {str(e)}")
 
-def view_files():
-    """Display all files."""
-    st.subheader("View Files")
-    files = read_files()
-    for file in files:
-        if is_user_associated_with_project(st.session_state["username"], file['project_id']):
-            st.write(f"ID: {file['id']}, Name: {file['name']}, Project: {file['project_id']}, Version: {file['version']}, Uploaded By: {file['uploaded_by']}, Uploaded At: {file['uploaded_at']}")
-            st.write("---")
-        else:
-            st.warning(f"You do not have permission to view files for the project with ID {file['project_id']}.")
+def budget_management():
+    st.subheader("Budget Management")
+    budgets = Budget.get_all()
+    for budget in budgets:
+        st.write(f"ID: {budget['id']}, Project ID: {budget['project_id']}, Amount: {budget['amount']}")
+        st.write(f"Date: {budget['date']}")
+        st.write("---")
 
-def is_user_associated_with_project(username, project_id):
-    """Check if a user is associated with a project."""
-    # TODO: Implement proper authorization logic
-    return True
-
-def manage_users():
-    """Handle user management operations."""
-    st.subheader("Manage Users")
-
-    with st.form("Create User"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        role = st.selectbox("Role", ["admin", "user"])
-        submitted = st.form_submit_button("Create User")
-        if submitted:
+    with st.form("Create Budget"):
+        project_id = st.number_input("Project ID", min_value=1)
+        amount = st.number_input("Amount")
+        date = st.date_input("Date")
+        if st.form_submit_button("Create Budget"):
             try:
-                create_user(username, password, role)
-                st.success(f"User '{username}' created successfully!")
-                logging.info(f"User '{username}' created by {st.session_state['username']}")
+                Budget.create(project_id, amount, date)
+                st.success("Budget created successfully!")
+                st.rerun()
             except Exception as e:
-                st.error(f"An error occurred while creating the user: {str(e)}")
-                logging.error(f"Error creating user: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error creating budget: {str(e)}")
 
-    users = User.get_all()
-    for user in users:
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.write(f"ID: {user['id']}, Username: {user['username']}, Role: {user['role']}")
-        with col2:
-            if st.button(f"Update User {user['username']}", key=f"update_user_{user['id']}"):
-                update_user_form(user)
-        with col3:
-            if st.button(f"Delete User {user['username']}", key=f"delete_user_{user['id']}"):
-                try:
-                    delete_user(user['id'])
-                    st.success(f"User '{user['username']}' deleted successfully!")
-                    logging.info(f"User '{user['username']}' deleted by {st.session_state['username']}")
-                except Exception as e:
-                    st.error(f"An error occurred while deleting the user: {str(e)}")
-                    logging.error(f"Error deleting user: {str(e)}")
+def communication():
+    st.subheader("Communication")
+    messages = Message.get_all()
+    for message in messages:
+        st.write(f"From: {message['from_user']}, To: {message['to_user']}, Message: {message['content']}")
+        st.write(f"Date: {message['date']}")
+        st.write("---")
 
-def update_user_form(user):
-    """Display form for updating a user."""
-    with st.form(f"Update User {user['username']}"):
-        username = st.text_input("Username", value=user['username'])
-        password = st.text_input("Password", type="password")
-        role = st.selectbox("Role", ["admin", "user"], index=["admin", "user"].index(user['role']))
-        submitted = st.form_submit_button("Update User")
-        if submitted:
+    with st.form("Send Message"):
+        from_user = st.text_input("From")
+        to_user = st.text_input("To")
+        content = st.text_area("Message")
+        date = st.date_input("Date")
+        if st.form_submit_button("Send Message"):
             try:
-                update_user(user['id'], username, password, role)
-                st.success(f"User '{username}' updated successfully!")
-                logging.info(f"User '{username}' updated by {st.session_state['username']}")
+                Message.create(from_user, to_user, content, date)
+                st.success("Message sent successfully!")
+                st.rerun()
             except Exception as e:
-                st.error(f"An error occurred while updating the user: {str(e)}")
-                logging.error(f"Error updating user: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error sending message: {str(e)}")
 
-def view_notifications():
-    """Display user-specific notifications."""
-    user_notifications = get_notifications_by_user(st.session_state["user_id"])
-    if user_notifications:
-        for notification in user_notifications:
-            st.write(f"Project: {notification['project_id']}, Message: {notification['message']}, Sent At: {notification['sent_at']}")
-    else:
-        st.write("No notifications found.")
+def reporting():
+    st.subheader("Reporting")
+    reports = Report.get_all()
+    for report in reports:
+        st.write(f"ID: {report['id']}, Name: {report['name']}, Content: {report['content']}")
+        st.write(f"Date: {report['date']}")
+        st.write("---")
+
+    with st.form("Create Report"):
+        name = st.text_input("Name")
+        content = st.text_area("Content")
+        date = st.date_input("Date")
+        if st.form_submit_button("Create Report"):
+            try:
+                Report.create(name, content, date)
+                st.success("Report created successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Error creating report: {str(e)}")
 
 if __name__ == "__main__":
-    if not st.session_state.get("authenticated", False):
-        choice = st.sidebar.selectbox("Menu", ["Login", "Register"])
-        if choice == "Login":
-            login()
-        elif choice == "Register":
-            register()
-    else:
-        main()
+    main()

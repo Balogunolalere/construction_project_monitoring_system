@@ -1,390 +1,472 @@
 import sqlite3
-import threading
-import bcrypt
-from datetime import datetime
-import os
+import logging
+from contextlib import contextmanager
+import hashlib
 
-# Thread-local storage
-thread_local = threading.local()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def get_conn():
-    if not hasattr(thread_local, "conn"):
-        thread_local.conn = sqlite3.connect('construction_projects.db')
-        thread_local.conn.row_factory = sqlite3.Row
-    return thread_local.conn
+@contextmanager
+def get_db_connection():
+    conn = sqlite3.connect('construction_projects.db')
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
-def get_cursor():
-    if not hasattr(thread_local, "cursor"):
-        thread_local.cursor = get_conn().cursor()
-    return thread_local.cursor
+def dict_from_row(row):
+    return dict(zip(row.keys(), row))
 
-# Create the tables
-conn = get_conn()
-cursor = get_cursor()
+def execute_query(query, params=(), fetchone=False):
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+        if fetchone:
+            row = cursor.fetchone()
+            return dict_from_row(row) if row else None
+        return [dict_from_row(row) for row in cursor.fetchall()]
 
-cursor.execute('''CREATE TABLE IF NOT EXISTS Projects
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT NOT NULL,
-                  description TEXT,
-                  start_date DATE,
-                  end_date DATE)''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS Tasks
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  project_id INTEGER,
-                  name TEXT NOT NULL,
-                  description TEXT,
-                  start_date DATE,
-                  end_date DATE,
-                  status TEXT,
-                  FOREIGN KEY(project_id) REFERENCES Projects(id))''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS Resources
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT NOT NULL,
-                  type TEXT,
-                  available_from DATE,
-                  available_to DATE)''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS Files
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  project_id INTEGER,
-                  name TEXT NOT NULL,
-                  file_path TEXT NOT NULL,
-                  version INTEGER,
-                  uploaded_by TEXT,
-                  uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY(project_id) REFERENCES Projects(id))''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS Users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT UNIQUE NOT NULL,
-                  password TEXT NOT NULL,
-                  role TEXT NOT NULL)''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS Notifications
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  project_id INTEGER,
-                  message TEXT NOT NULL,
-                  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY(user_id) REFERENCES Users(id),
-                  FOREIGN KEY(project_id) REFERENCES Projects(id))''')
-
-conn.commit()
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 class Project:
-    def __init__(self, name, description, start_date, end_date):
-        self.name = name
-        self.description = description
-        self.start_date = start_date
-        self.end_date = end_date
-
-    def save(self):
-        cursor = get_cursor()
-        cursor.execute("INSERT INTO Projects (name, description, start_date, end_date) VALUES (?, ?, ?, ?)",
-                       (self.name, self.description, self.start_date, self.end_date))
-        get_conn().commit()
-        return cursor.lastrowid
+    @staticmethod
+    def create(name, description, start_date, end_date):
+        query = """INSERT INTO Projects (name, description, start_date, end_date)
+                   VALUES (?, ?, ?, ?)"""
+        execute_query(query, (name, description, start_date, end_date))
+        logger.info(f"Project '{name}' created successfully")
 
     @staticmethod
     def get_all():
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Projects")
-        return cursor.fetchall()
+        return execute_query("SELECT * FROM Projects")
 
     @staticmethod
     def get_by_id(project_id):
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Projects WHERE id=?", (project_id,))
-        return cursor.fetchone()
+        query = "SELECT * FROM Projects WHERE id = ?"
+        result = execute_query(query, (project_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No project found with ID {project_id}")
+        return result
 
     @staticmethod
     def update(project_id, name, description, start_date, end_date):
-        cursor = get_cursor()
-        cursor.execute("UPDATE Projects SET name=?, description=?, start_date=?, end_date=? WHERE id=?",
-                       (name, description, start_date, end_date, project_id))
-        get_conn().commit()
+        query = """UPDATE Projects
+                   SET name = ?, description = ?, start_date = ?, end_date = ?
+                   WHERE id = ?"""
+        execute_query(query, (name, description, start_date, end_date, project_id))
+        updated_project = Project.get_by_id(project_id)
+        if updated_project:
+            logger.info(f"Project with ID {project_id} updated successfully")
+            return updated_project
+        logger.error(f"Update failed: Project with ID {project_id} not found after update")
+        return None
 
     @staticmethod
     def delete(project_id):
-        cursor = get_cursor()
-        cursor.execute("DELETE FROM Projects WHERE id=?", (project_id,))
-        get_conn().commit()
-
-class Task:
-    def __init__(self, project_id, name, description, start_date, end_date, status):
-        self.project_id = project_id
-        self.name = name
-        self.description = description
-        self.start_date = start_date
-        self.end_date = end_date
-        self.status = status
-
-    def save(self):
-        cursor = get_cursor()
-        cursor.execute("INSERT INTO Tasks (project_id, name, description, start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?)",
-                       (self.project_id, self.name, self.description, self.start_date, self.end_date, self.status))
-        get_conn().commit()
-        return cursor.lastrowid
-
-    @staticmethod
-    def get_all():
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Tasks")
-        return cursor.fetchall()
-
-    @staticmethod
-    def get_by_project(project_id):
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Tasks WHERE project_id=?", (project_id,))
-        return cursor.fetchall()
-
-    @staticmethod
-    def update(task_id, name, description, start_date, end_date, status):
-        cursor = get_cursor()
-        cursor.execute("UPDATE Tasks SET name=?, description=?, start_date=?, end_date=?, status=? WHERE id=?",
-                       (name, description, start_date, end_date, status, task_id))
-        get_conn().commit()
-
-    @staticmethod
-    def delete(task_id):
-        cursor = get_cursor()
-        cursor.execute("DELETE FROM Tasks WHERE id=?", (task_id,))
-        get_conn().commit()
-
-class Resource:
-    def __init__(self, name, type, available_from, available_to):
-        self.name = name
-        self.type = type
-        self.available_from = available_from
-        self.available_to = available_to
-
-    def save(self):
-        cursor = get_cursor()
-        cursor.execute("INSERT INTO Resources (name, type, available_from, available_to) VALUES (?, ?, ?, ?)",
-                       (self.name, self.type, self.available_from, self.available_to))
-        get_conn().commit()
-        return cursor.lastrowid
-
-    @staticmethod
-    def get_all():
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Resources")
-        return cursor.fetchall()
-
-    @staticmethod
-    def update(resource_id, name, type, available_from, available_to):
-        cursor = get_cursor()
-        cursor.execute("UPDATE Resources SET name=?, type=?, available_from=?, available_to=? WHERE id=?",
-                       (name, type, available_from, available_to, resource_id))
-        get_conn().commit()
-
-    @staticmethod
-    def delete(resource_id):
-        cursor = get_cursor()
-        cursor.execute("DELETE FROM Resources WHERE id=?", (resource_id,))
-        get_conn().commit()
+        query = "DELETE FROM Projects WHERE id = ?"
+        execute_query(query, (project_id,))
+        logger.info(f"Project with ID {project_id} deleted successfully")
 
 class File:
-    def __init__(self, project_id, name, file_path, version, uploaded_by):
-        self.project_id = project_id
-        self.name = name
-        self.file_path = file_path
-        self.version = version
-        self.uploaded_by = uploaded_by
-
-    def save(self):
-        cursor = get_cursor()
-        cursor.execute("INSERT INTO Files (project_id, name, file_path, version, uploaded_by) VALUES (?, ?, ?, ?, ?)",
-                       (self.project_id, self.name, self.file_path, self.version, self.uploaded_by))
-        get_conn().commit()
-        return cursor.lastrowid
+    @staticmethod
+    def create(name, path):
+        query = """INSERT INTO Files (name, path)
+                   VALUES (?, ?)"""
+        execute_query(query, (name, path))
+        logger.info(f"File '{name}' created successfully")
 
     @staticmethod
     def get_all():
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Files")
-        return cursor.fetchall()
+        return execute_query("SELECT * FROM Files")
 
     @staticmethod
-    def get_by_project(project_id):
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Files WHERE project_id=?", (project_id,))
-        return cursor.fetchall()
+    def get_by_id(file_id):
+        query = "SELECT * FROM Files WHERE id = ?"
+        result = execute_query(query, (file_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No file found with ID {file_id}")
+        return result
 
     @staticmethod
-    def update(file_id, name, file_path):
-        cursor = get_cursor()
-        cursor.execute("UPDATE Files SET name=?, file_path=?, version=version+1 WHERE id=?",
-                       (name, file_path, file_id))
-        get_conn().commit()
-        cursor.execute("SELECT version FROM Files WHERE id=?", (file_id,))
-        return cursor.fetchone()['version']
+    def update(file_id, name, path):
+        query = """UPDATE Files
+                   SET name = ?, path = ?
+                   WHERE id = ?"""
+        execute_query(query, (name, path, file_id))
+        updated_file = File.get_by_id(file_id)
+        if updated_file:
+            logger.info(f"File with ID {file_id} updated successfully")
+            return updated_file
+        logger.error(f"Update failed: File with ID {file_id} not found after update")
+        return None
 
     @staticmethod
     def delete(file_id):
-        cursor = get_cursor()
-        cursor.execute("DELETE FROM Files WHERE id=?", (file_id,))
-        get_conn().commit()
+        query = "DELETE FROM Files WHERE id = ?"
+        execute_query(query, (file_id,))
+        logger.info(f"File with ID {file_id} deleted successfully")
 
-class User:
-    def __init__(self, username, password, role):
-        self.username = username
-        self.password = self._hash_password(password)
-        self.role = role
-
+class Notification:
     @staticmethod
-    def _hash_password(password):
-        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-    def save(self):
-        cursor = get_cursor()
-        cursor.execute("INSERT INTO Users (username, password, role) VALUES (?, ?, ?)",
-                       (self.username, self.password, self.role))
-        get_conn().commit()
-        return cursor.lastrowid
-
-    @staticmethod
-    def get_by_username(username):
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Users WHERE username=?", (username,))
-        return cursor.fetchone()
+    def create(message, date):
+        query = """INSERT INTO Notifications (message, date)
+                   VALUES (?, ?)"""
+        execute_query(query, (message, date))
+        logger.info(f"Notification '{message}' created successfully")
 
     @staticmethod
     def get_all():
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Users")
-        return cursor.fetchall()
+        return execute_query("SELECT * FROM Notifications")
 
     @staticmethod
-    def update(user_id, username, password, role):
-        cursor = get_cursor()
-        hashed_password = User._hash_password(password)
-        cursor.execute("UPDATE Users SET username=?, password=?, role=? WHERE id=?",
-                       (username, hashed_password, role, user_id))
-        get_conn().commit()
+    def get_by_id(notification_id):
+        query = "SELECT * FROM Notifications WHERE id = ?"
+        result = execute_query(query, (notification_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No notification found with ID {notification_id}")
+        return result
 
     @staticmethod
-    def delete(user_id):
-        cursor = get_cursor()
-        cursor.execute("DELETE FROM Users WHERE id=?", (user_id,))
-        get_conn().commit()
-
-class Notification:
-    def __init__(self, user_id, project_id, message):
-        self.user_id = user_id
-        self.project_id = project_id
-        self.message = message
-
-    def save(self):
-        cursor = get_cursor()
-        cursor.execute("INSERT INTO Notifications (user_id, project_id, message) VALUES (?, ?, ?)",
-                       (self.user_id, self.project_id, self.message))
-        get_conn().commit()
-        return cursor.lastrowid
+    def update(notification_id, message, date):
+        query = """UPDATE Notifications
+                   SET message = ?, date = ?
+                   WHERE id = ?"""
+        execute_query(query, (message, date, notification_id))
+        updated_notification = Notification.get_by_id(notification_id)
+        if updated_notification:
+            logger.info(f"Notification with ID {notification_id} updated successfully")
+            return updated_notification
+        logger.error(f"Update failed: Notification with ID {notification_id} not found after update")
+        return None
 
     @staticmethod
-    def get_by_user(user_id):
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Notifications WHERE user_id=? ORDER BY sent_at DESC", (user_id,))
-        return cursor.fetchall()
+    def delete(notification_id):
+        query = "DELETE FROM Notifications WHERE id = ?"
+        execute_query(query, (notification_id,))
+        logger.info(f"Notification with ID {notification_id} deleted successfully")
+
+class Resource:
+    @staticmethod
+    def create(name, type, availability):
+        query = """INSERT INTO Resources (name, type, availability)
+                   VALUES (?, ?, ?)"""
+        execute_query(query, (name, type, availability))
+        logger.info(f"Resource '{name}' created successfully")
 
     @staticmethod
-    def get_by_project(project_id):
-        cursor = get_cursor()
-        cursor.execute("SELECT * FROM Notifications WHERE project_id=? ORDER BY sent_at DESC", (project_id,))
-        return cursor.fetchall()
+    def get_all():
+        return execute_query("SELECT * FROM Resources")
 
-def create_notification(user_id, project_id, message):
-    notification = Notification(user_id, project_id, message)
-    return notification.save()
+    @staticmethod
+    def get_by_id(resource_id):
+        query = "SELECT * FROM Resources WHERE id = ?"
+        result = execute_query(query, (resource_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No resource found with ID {resource_id}")
+        return result
 
-def get_notifications_by_user(user_id):
-    return Notification.get_by_user(user_id)
+    @staticmethod
+    def update(resource_id, name, type, availability):
+        query = """UPDATE Resources
+                   SET name = ?, type = ?, availability = ?
+                   WHERE id = ?"""
+        execute_query(query, (name, type, availability, resource_id))
+        updated_resource = Resource.get_by_id(resource_id)
+        if updated_resource:
+            logger.info(f"Resource with ID {resource_id} updated successfully")
+            return updated_resource
+        logger.error(f"Update failed: Resource with ID {resource_id} not found after update")
+        return None
 
-def get_notifications_by_project(project_id):
-    return Notification.get_by_project(project_id)
+    @staticmethod
+    def delete(resource_id):
+        query = "DELETE FROM Resources WHERE id = ?"
+        execute_query(query, (resource_id,))
+        logger.info(f"Resource with ID {resource_id} deleted successfully")
 
-def create_project(name, description, start_date, end_date):
-    project = Project(name, description, start_date, end_date)
-    return project.save()
+class Task:
+    @staticmethod
+    def create(name, start_date, end_date, dependencies):
+        query = """INSERT INTO Tasks (name, start_date, end_date, dependencies)
+                   VALUES (?, ?, ?, ?)"""
+        execute_query(query, (name, start_date, end_date, dependencies))
+        logger.info(f"Task '{name}' created successfully")
 
-def read_projects():
-    return Project.get_all()
+    @staticmethod
+    def get_all():
+        return execute_query("SELECT * FROM Tasks")
 
-def update_project(project_id, name, description, start_date, end_date):
-    return Project.update(project_id, name, description, start_date, end_date)
+    @staticmethod
+    def get_by_id(task_id):
+        query = "SELECT * FROM Tasks WHERE id = ?"
+        result = execute_query(query, (task_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No task found with ID {task_id}")
+        return result
 
-def delete_project(project_id):
-    return Project.delete(project_id)
+    @staticmethod
+    def update(task_id, name, start_date, end_date, dependencies):
+        query = """UPDATE Tasks
+                   SET name = ?, start_date = ?, end_date = ?, dependencies = ?
+                   WHERE id = ?"""
+        execute_query(query, (name, start_date, end_date, dependencies, task_id))
+        updated_task = Task.get_by_id(task_id)
+        if updated_task:
+            logger.info(f"Task with ID {task_id} updated successfully")
+            return updated_task
+        logger.error(f"Update failed: Task with ID {task_id} not found after update")
+        return None
 
-def create_task(project_id, name, description, start_date, end_date, status):
-    task = Task(project_id, name, description, start_date, end_date, status)
-    return task.save()
+    @staticmethod
+    def delete(task_id):
+        query = "DELETE FROM Tasks WHERE id = ?"
+        execute_query(query, (task_id,))
+        logger.info(f"Task with ID {task_id} deleted successfully")
 
-def read_tasks():
-    return Task.get_all()
+class Budget:
+    @staticmethod
+    def create(project_id, amount, date):
+        query = """INSERT INTO Budgets (project_id, amount, date)
+                   VALUES (?, ?, ?)"""
+        execute_query(query, (project_id, amount, date))
+        logger.info(f"Budget for project ID '{project_id}' created successfully")
 
-def read_tasks_by_project(project_id):
-    return Task.get_by_project(project_id)
+    @staticmethod
+    def get_all():
+        return execute_query("SELECT * FROM Budgets")
 
-def update_task(task_id, name, description, start_date, end_date, status):
-    return Task.update(task_id, name, description, start_date, end_date, status)
+    @staticmethod
+    def get_by_id(budget_id):
+        query = "SELECT * FROM Budgets WHERE id = ?"
+        result = execute_query(query, (budget_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No budget found with ID {budget_id}")
+        return result
 
-def delete_task(task_id):
-    return Task.delete(task_id)
+    @staticmethod
+    def update(budget_id, project_id, amount, date):
+        query = """UPDATE Budgets
+                   SET project_id = ?, amount = ?, date = ?
+                   WHERE id = ?"""
+        execute_query(query, (project_id, amount, date, budget_id))
+        updated_budget = Budget.get_by_id(budget_id)
+        if updated_budget:
+            logger.info(f"Budget with ID {budget_id} updated successfully")
+            return updated_budget
+        logger.error(f"Update failed: Budget with ID {budget_id} not found after update")
+        return None
 
-def create_resource(name, type, available_from, available_to):
-    resource = Resource(name, type, available_from, available_to)
-    return resource.save()
+    @staticmethod
+    def delete(budget_id):
+        query = "DELETE FROM Budgets WHERE id = ?"
+        execute_query(query, (budget_id,))
+        logger.info(f"Budget with ID {budget_id} deleted successfully")
 
-def read_resources():
-    return Resource.get_all()
+class Message:
+    @staticmethod
+    def create(from_user, to_user, content, date):
+        query = """INSERT INTO Messages (from_user, to_user, content, date)
+                   VALUES (?, ?, ?, ?)"""
+        execute_query(query, (from_user, to_user, content, date))
+        logger.info(f"Message from '{from_user}' to '{to_user}' created successfully")
 
-def update_resource(resource_id, name, type, available_from, available_to):
-    return Resource.update(resource_id, name, type, available_from, available_to)
+    @staticmethod
+    def get_all():
+        return execute_query("SELECT * FROM Messages")
 
-def delete_resource(resource_id):
-    return Resource.delete(resource_id)
+    @staticmethod
+    def get_by_id(message_id):
+        query = "SELECT * FROM Messages WHERE id = ?"
+        result = execute_query(query, (message_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No message found with ID {message_id}")
+        return result
 
-def create_file(project_id, name, file_path, version, uploaded_by):
-    file = File(project_id, name, file_path, version, uploaded_by)
-    return file.save()
+    @staticmethod
+    def update(message_id, from_user, to_user, content, date):
+        query = """UPDATE Messages
+                   SET from_user = ?, to_user = ?, content = ?, date = ?
+                   WHERE id = ?"""
+        execute_query(query, (from_user, to_user, content, date, message_id))
+        updated_message = Message.get_by_id(message_id)
+        if updated_message:
+            logger.info(f"Message with ID {message_id} updated successfully")
+            return updated_message
+        logger.error(f"Update failed: Message with ID {message_id} not found after update")
+        return None
 
-def read_files():
-    return File.get_all()
+    @staticmethod
+    def delete(message_id):
+        query = "DELETE FROM Messages WHERE id = ?"
+        execute_query(query, (message_id,))
+        logger.info(f"Message with ID {message_id} deleted successfully")
 
-def read_files_by_project(project_id):
-    return File.get_by_project(project_id)
+class Report:
+    @staticmethod
+    def create(name, content, date):
+        query = """INSERT INTO Reports (name, content, date)
+                   VALUES (?, ?, ?)"""
+        execute_query(query, (name, content, date))
+        logger.info(f"Report '{name}' created successfully")
 
-def update_file(file_id, name, file_path):
-    return File.update(file_id, name, file_path)
+    @staticmethod
+    def get_all():
+        return execute_query("SELECT * FROM Reports")
 
-def delete_file(file_id):
-    return File.delete(file_id)
+    @staticmethod
+    def get_by_id(report_id):
+        query = "SELECT * FROM Reports WHERE id = ?"
+        result = execute_query(query, (report_id,), fetchone=True)
+        if result is None:
+            logger.warning(f"No report found with ID {report_id}")
+        return result
 
-def create_user(username, password, role):
-    user = User(username, password, role)
-    return user.save()
+    @staticmethod
+    def update(report_id, name, content, date):
+        query = """UPDATE Reports
+                   SET name = ?, content = ?, date = ?
+                   WHERE id = ?"""
+        execute_query(query, (name, content, date, report_id))
+        updated_report = Report.get_by_id(report_id)
+        if updated_report:
+            logger.info(f"Report with ID {report_id} updated successfully")
+            return updated_report
+        logger.error(f"Update failed: Report with ID {report_id} not found after update")
+        return None
 
-def update_user(user_id, username, password, role):
-    return User.update(user_id, username, password, role)
+    @staticmethod
+    def delete(report_id):
+        query = "DELETE FROM Reports WHERE id = ?"
+        execute_query(query, (report_id,))
+        logger.info(f"Report with ID {report_id} deleted successfully")
 
-def delete_user(user_id):
-    return User.delete(user_id)
+class User:
+    @staticmethod
+    def create(username, password, role='user'):
+        hashed_password = hash_password(password)
+        query = """INSERT INTO Users (username, password, role)
+                   VALUES (?, ?, ?)"""
+        execute_query(query, (username, hashed_password, role))
+        logger.info(f"User '{username}' created successfully")
 
+    @staticmethod
+    def get_by_username(username):
+        query = "SELECT * FROM Users WHERE username = ?"
+        result = execute_query(query, (username,), fetchone=True)
+        if result is None:
+            logger.warning(f"No user found with username {username}")
+        return result
+
+    @staticmethod
+    def update(username, password, role):
+        hashed_password = hash_password(password)
+        query = """UPDATE Users
+                   SET password = ?, role = ?
+                   WHERE username = ?"""
+        execute_query(query, (hashed_password, role, username))
+        updated_user = User.get_by_username(username)
+        if updated_user:
+            logger.info(f"User '{username}' updated successfully")
+            return updated_user
+        logger.error(f"Update failed: User '{username}' not found after update")
+        return None
+
+    @staticmethod
+    def delete(username):
+        query = "DELETE FROM Users WHERE username = ?"
+        execute_query(query, (username,))
+        logger.info(f"User '{username}' deleted successfully")
+
+    @staticmethod
+    def get_by_reset_token(token):
+        query = "SELECT * FROM Users WHERE reset_token = ?"
+        result = execute_query(query, (token,), fetchone=True)
+        if result is None:
+            logger.warning(f"No user found with reset token {token}")
+        return result
+
+    @staticmethod
+    def update_password(username, new_password):
+        hashed_password = hash_password(new_password)
+        query = """UPDATE Users
+                   SET password = ?
+                   WHERE username = ?"""
+        execute_query(query, (hashed_password, username))
+        updated_user = User.get_by_username(username)
+        if updated_user:
+            logger.info(f"Password for user '{username}' updated successfully")
+            return updated_user
+        logger.error(f"Update failed: User '{username}' not found after update")
+        return None
+
+# Initialize database
 def initialize_database():
-    cursor = get_cursor()
-    cursor.execute("SELECT COUNT(*) FROM Users")
-    count = cursor.fetchone()[0]
+    with get_db_connection() as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS Projects
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         name TEXT NOT NULL,
+                         description TEXT,
+                         start_date DATE,
+                         end_date DATE)''')
 
-    if count == 0:
-        # Create an initial admin user
-        admin_username = "admin"
-        admin_password = "admin"
-        admin_role = "admin"
-        create_user(admin_username, admin_password, admin_role)
-        print(f"Initial admin user created: Username = {admin_username}, Password = {admin_password}")
+        conn.execute('''CREATE TABLE IF NOT EXISTS Files
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         name TEXT NOT NULL,
+                         path TEXT NOT NULL)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Notifications
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         message TEXT NOT NULL,
+                         date DATE NOT NULL)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Resources
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         name TEXT NOT NULL,
+                         type TEXT NOT NULL,
+                         availability TEXT NOT NULL)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Tasks
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         name TEXT NOT NULL,
+                         start_date DATE NOT NULL,
+                         end_date DATE NOT NULL,
+                         dependencies TEXT)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Budgets
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         project_id INTEGER NOT NULL,
+                         amount REAL NOT NULL,
+                         date DATE NOT NULL)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Messages
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         from_user TEXT NOT NULL,
+                         to_user TEXT NOT NULL,
+                         content TEXT NOT NULL,
+                         date DATE NOT NULL)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Reports
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         name TEXT NOT NULL,
+                         content TEXT NOT NULL,
+                         date DATE NOT NULL)''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS Users
+                        (username TEXT PRIMARY KEY,
+                         password TEXT NOT NULL,
+                         role TEXT NOT NULL,
+                         reset_token TEXT)''')
+
+        # Create default admin user
+        admin_user = User.get_by_username("admin")
+        if not admin_user:
+            User.create("admin", "admin", "admin")
+
+    logger.info("Database initialized successfully")
 
 initialize_database()
+
