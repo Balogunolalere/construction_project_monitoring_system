@@ -230,17 +230,29 @@ def budget_management():
 
 def communication():
     st.subheader("Communication")
+    
+    # Display existing messages
     messages = Message.get_all()
     for message in messages:
         st.write(f"From: {message['from_user']}, To: {message['to_user']}, Message: {message['content']}")
         st.write(f"Date: {message['date']}")
         st.write("---")
 
+    # Fetch all users except the logged-in user
+    users = [user['username'] for user in User.get_all() if user['username'] != st.session_state.user['username']]
+
     with st.form("Send Message"):
-        from_user = st.text_input("From")
-        to_user = st.text_input("To")
+        # Auto-populate 'from' field with the current user
+        from_user = st.text_input("From", value=st.session_state.user['username'], disabled=True)
+        
+        # Dropdown for selecting 'to' user
+        to_user = st.selectbox("To", users)
+
+        # Input for the message and date
         content = st.text_area("Message")
         date = st.date_input("Date")
+
+        # Submit form
         if st.form_submit_button("Send Message"):
             try:
                 Message.create(from_user, to_user, content, date)

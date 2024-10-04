@@ -1,23 +1,42 @@
 from database import User
 import hashlib
-import smtplib
-from email.mime.text import MIMEText
-import uuid
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+    logger.debug(f"Hashing password: {password}")
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    logger.debug(f"Hashed password: {hashed}")
+    return hashed
 
 def login(username, password):
+    logger.debug(f"Login attempt for user: {username}")
     user = User.get_by_username(username)
-    if user and user['password'] == hash_password(password):
-        return user
+    if user:
+        logger.debug(f"User found: {username}")
+        logger.debug(f"Stored hashed password: {user['password']}")
+        entered_hash = hash_password(password)
+        logger.debug(f"Entered password hash: {entered_hash}")
+        if user['password'] == entered_hash:
+            logger.debug("Password match successful")
+            return user
+        else:
+            logger.debug("Password match failed")
+    else:
+        logger.debug(f"User not found: {username}")
     return None
 
 def register(username, password):
+    logger.debug(f"Registration attempt for user: {username}")
     if User.get_by_username(username):
+        logger.debug(f"Username already exists: {username}")
         return False
     hashed_password = hash_password(password)
-    User.create(username, hashed_password)
+    logger.debug(f"Hashed password for registration: {hashed_password}")
+    User.create(username, hashed_password)  # Make sure this is passing the hashed password
+    logger.debug(f"User created: {username}")
     return True
 
 def check_login(session):
@@ -25,26 +44,3 @@ def check_login(session):
 
 def logout(session):
     session['user'] = None
-
-# def send_reset_email(email, reset_token):
-#     msg = MIMEText(f"Click the link to reset your password: http://localhost:8501/reset_password?token={reset_token}")
-#     msg['Subject'] = 'Password Reset'
-#     msg['From'] = 'no-reply@example.com'
-#     msg['To'] = email
-
-#     with smtplib.SMTP('smtp.example.com') as server:
-#         server.login('username', 'password')
-#         server.sendmail('no-reply@example.com', [email], msg.as_string())
-
-# def reset_password(token, new_password):
-#     user = User.get_by_reset_token(token)
-#     if user:
-#         hashed_password = hash_password(new_password)
-#         User.update_password(user['username'], hashed_password)
-#         return True
-#     return False
-
-# def generate_reset_token(username):
-#     token = str(uuid.uuid4())
-#     User.update(username, None, None, reset_token=token)
-#     return token

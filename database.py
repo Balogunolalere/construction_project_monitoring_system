@@ -346,10 +346,9 @@ class Report:
 
 class User:
     @staticmethod
-    def create(username, password, role='user'):
-        hashed_password = hash_password(password)
+    def create(username, hashed_password, role='user'):
         query = """INSERT INTO Users (username, password, role)
-                   VALUES (?, ?, ?)"""
+               VALUES (?, ?, ?)"""
         execute_query(query, (username, hashed_password, role))
         logger.info(f"User '{username}' created successfully")
 
@@ -402,6 +401,16 @@ class User:
             return updated_user
         logger.error(f"Update failed: User '{username}' not found after update")
         return None
+    
+    @staticmethod
+    def get_by_username(username):
+        query = "SELECT * FROM Users WHERE username = ?"
+        return execute_query(query, (username,), fetchone=True)
+
+    @staticmethod
+    def get_all():
+        query = "SELECT * FROM Users"
+        return execute_query(query)  # Fetch all users
 
 # Initialize database
 def initialize_database():
@@ -464,7 +473,8 @@ def initialize_database():
         # Create default admin user
         admin_user = User.get_by_username("admin")
         if not admin_user:
-            User.create("admin", "admin", "admin")
+            hashed_admin_password = hash_password("admin")
+            User.create("admin", hashed_admin_password, "admin")
 
     logger.info("Database initialized successfully")
 
